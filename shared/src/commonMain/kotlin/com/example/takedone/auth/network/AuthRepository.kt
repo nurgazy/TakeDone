@@ -1,19 +1,27 @@
 package com.example.takedone.auth.network
 
-import com.example.takedone.auth.model.AuthResponse
 import com.example.takedone.auth.model.AuthResult
 import com.example.takedone.auth.model.AuthTokens
-import com.example.takedone.auth.model.LoginRequest
 import com.example.takedone.auth.model.RegisterRequest
+import com.example.takedone.auth.model.TokenResponse
 import com.example.takedone.auth.model.User
 import com.example.takedone.auth.storage.TokenStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.Parameters
 import io.ktor.http.isSuccess
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 interface AuthRepository {
     suspend fun login(email: String, password: String): AuthResult<User>
@@ -30,62 +38,63 @@ class AuthRepositoryImpl(
 ) : AuthRepository {
 
     private var currentUser: User? = null
+    private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun login(email: String, password: String): AuthResult<User> {
         return try {
             val response: HttpResponse = client.post("/auth/login") {
-                setBody(LoginRequest(email = email, password = password))
+                setBody(
+                    FormDataContent(
+                        Parameters.build {
+                            append("username", email)
+                            append("password", password)
+                        }
+                    )
+                )
             }
 
             if (response.status.isSuccess()) {
-                val authResponse: AuthResponse = response.body()
+                val tokenResponse: TokenResponse = response.body()
                 tokenStorage.saveTokens(
-                    AuthTokens(authResponse.token, authResponse.refreshToken)
+                    AuthTokens(tokenResponse.accessToken, tokenResponse.refreshToken)
                 )
-                currentUser = authResponse.user
-                AuthResult.Success(authResponse.user)
+                getCurrentUser()
             } else {
-                AuthResult.Error("Ошибка входа: ${response.status.value}", response.status.value)
+                val errorMsg = parseErrorMessage(response)
+                AuthResult.Error(errorMsg, response.status.value)
             }
         } catch (e: Exception) {
-            val demoUser = User(
-                id = "demo_123",
-                email = email,
-                name = if (email.contains("@")) email.substringBefore("@") else email,
-                role = "User"
-            )
-            tokenStorage.saveTokens(AuthTokens("demo_access_token", "demo_refresh_token"))
-            currentUser = demoUser
-            AuthResult.Success(demoUser)
+            AuthResult.Error("Ошибка входа: ${e.message ?: "Неизвестная ошибка"}")
         }
     }
 
     override suspend fun register(name: String, email: String, password: String): AuthResult<User> {
         return try {
             val response: HttpResponse = client.post("/auth/register") {
-                setBody(RegisterRequest(name = name, email = email, password = password))
+                setBody(
+                    RegisterRequest(
+                        email = email,
+                        password = password,
+                        fullName = name.ifBlank { null }
+                    )
+                )
             }
 
             if (response.status.isSuccess()) {
-                val authResponse: AuthResponse = response.body()
-                tokenStorage.saveTokens(
-                    AuthTokens(authResponse.token, authResponse.refreshToken)
-                )
-                currentUser = authResponse.user
-                AuthResult.Success(authResponse.user)
+                val registeredUser: User = response.body()
+                when (val loginResult = login(email, password)) {
+                    is AuthResult.Success -> loginResult
+                    else -> {
+                        currentUser = registeredUser
+                        AuthResult.Success(registeredUser)
+                    }
+                }
             } else {
-                AuthResult.Error("Ошибка регистрации: ${response.status.value}", response.status.value)
+                val errorMsg = parseErrorMessage(response)
+                AuthResult.Error(errorMsg, response.status.value)
             }
         } catch (e: Exception) {
-            val demoUser = User(
-                id = "demo_123",
-                email = email,
-                name = name,
-                role = "User"
-            )
-            tokenStorage.saveTokens(AuthTokens("demo_access_token", "demo_refresh_token"))
-            currentUser = demoUser
-            AuthResult.Success(demoUser)
+            AuthResult.Error("Ошибка регистрации: ${e.message ?: "Неизвестная ошибка"}")
         }
     }
 
@@ -94,34 +103,24 @@ class AuthRepositoryImpl(
             return AuthResult.Error("Пользователь не авторизован")
         }
 
-        currentUser?.let { return AuthResult.Success(it) }
-
         return try {
-            val response: HttpResponse = client.get("/auth/me")
+            val response: HttpResponse = client.get("/users/me")
             if (response.status.isSuccess()) {
                 val user: User = response.body()
                 currentUser = user
                 AuthResult.Success(user)
             } else {
                 tokenStorage.clear()
-                AuthResult.Error("Не удалось получить профиль", response.status.value)
+                currentUser = null
+                val errorMsg = parseErrorMessage(response)
+                AuthResult.Error(errorMsg, response.status.value)
             }
         } catch (e: Exception) {
-            val demoUser = User(
-                id = "demo_123",
-                email = "user@example.com",
-                name = "Пользователь",
-                role = "User"
-            )
-            currentUser = demoUser
-            AuthResult.Success(demoUser)
+            AuthResult.Error("Ошибка загрузки профиля: ${e.message ?: "Неизвестная ошибка"}")
         }
     }
 
     override suspend fun logout() {
-        try {
-            client.post("/auth/logout")
-        } catch (_: Exception) {}
         tokenStorage.clear()
         currentUser = null
     }
@@ -132,5 +131,24 @@ class AuthRepositoryImpl(
 
     override fun getSavedUser(): User? {
         return currentUser
+    }
+
+    private suspend fun parseErrorMessage(response: HttpResponse): String {
+        return try {
+            val text = response.bodyAsText()
+            if (text.isBlank()) return "Ошибка ${response.status.value}"
+            val element = json.parseToJsonElement(text)
+            if (element is JsonObject && element.containsKey("detail")) {
+                when (val detail = element["detail"]) {
+                    is JsonPrimitive -> detail.content
+                    is JsonArray -> detail.firstOrNull()?.jsonObject?.get("msg")?.jsonPrimitive?.content ?: text
+                    else -> text
+                }
+            } else {
+                text
+            }
+        } catch (_: Exception) {
+            "Ошибка сервера (${response.status.value})"
+        }
     }
 }

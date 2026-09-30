@@ -1,7 +1,9 @@
 package com.example.takedone.auth.network
 
-import com.example.takedone.auth.model.AuthResponse
+import com.example.takedone.getPlatform
 import com.example.takedone.auth.model.AuthTokens
+import com.example.takedone.auth.model.RefreshTokenRequest
+import com.example.takedone.auth.model.TokenResponse
 import com.example.takedone.auth.storage.TokenStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -18,12 +20,18 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
 object HttpClientFactory {
-    const val BASE_URL = "https://api.example.com"
+    fun getBaseUrl(): String {
+        return if (getPlatform().name.startsWith("Android")) {
+            "http://10.0.2.2:8008"
+        } else {
+            "http://localhost:8008"
+        }
+    }
 
     fun create(tokenStorage: TokenStorage): HttpClient {
         return HttpClient {
             defaultRequest {
-                url(BASE_URL)
+                url(getBaseUrl())
                 contentType(ContentType.Application.Json)
             }
 
@@ -40,7 +48,7 @@ object HttpClientFactory {
                     loadTokens {
                         val accessToken = tokenStorage.getAccessToken()
                         val refreshToken = tokenStorage.getRefreshToken()
-                        if (accessToken != null) {
+                        if (!accessToken.isNullOrEmpty()) {
                             BearerTokens(accessToken, refreshToken ?: "")
                         } else null
                     }
@@ -48,13 +56,13 @@ object HttpClientFactory {
                     refreshTokens {
                         val oldRefreshToken = tokenStorage.getRefreshToken() ?: return@refreshTokens null
                         try {
-                            val response: AuthResponse = client.post("/auth/refresh") {
-                                setBody(mapOf("refreshToken" to oldRefreshToken))
+                            val response: TokenResponse = client.post("/auth/refresh") {
+                                setBody(RefreshTokenRequest(oldRefreshToken))
                             }.body()
                             tokenStorage.saveTokens(
-                                AuthTokens(response.token, response.refreshToken ?: oldRefreshToken)
+                                AuthTokens(response.accessToken, response.refreshToken ?: oldRefreshToken)
                             )
-                            BearerTokens(response.token, response.refreshToken ?: oldRefreshToken)
+                            BearerTokens(response.accessToken, response.refreshToken ?: oldRefreshToken)
                         } catch (e: Exception) {
                             tokenStorage.clear()
                             null

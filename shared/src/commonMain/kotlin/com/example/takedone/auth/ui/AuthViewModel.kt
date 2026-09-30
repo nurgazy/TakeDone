@@ -81,8 +81,12 @@ class AuthViewModel(
     }
 
     fun register(name: String, email: String, password: String) {
-        if (name.isBlank() || email.isBlank() || password.isBlank()) {
-            _uiState.value = AuthState.Error("Заполните все поля")
+        if (email.isBlank() || password.isBlank()) {
+            _uiState.value = AuthState.Error("Заполните email и пароль")
+            return
+        }
+        if (password.length < 8) {
+            _uiState.value = AuthState.Error("Пароль должен быть не менее 8 символов")
             return
         }
 
