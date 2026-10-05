@@ -64,7 +64,7 @@ class AuthRepositoryImpl(
                 AuthResult.Error(errorMsg, response.status.value)
             }
         } catch (e: Exception) {
-            AuthResult.Error("Ошибка входа: ${e.message ?: "Неизвестная ошибка"}")
+            handleException(e, "Ошибка входа")
         }
     }
 
@@ -94,7 +94,7 @@ class AuthRepositoryImpl(
                 AuthResult.Error(errorMsg, response.status.value)
             }
         } catch (e: Exception) {
-            AuthResult.Error("Ошибка регистрации: ${e.message ?: "Неизвестная ошибка"}")
+            handleException(e, "Ошибка регистрации")
         }
     }
 
@@ -116,7 +116,7 @@ class AuthRepositoryImpl(
                 AuthResult.Error(errorMsg, response.status.value)
             }
         } catch (e: Exception) {
-            AuthResult.Error("Ошибка загрузки профиля: ${e.message ?: "Неизвестная ошибка"}")
+            handleException(e, "Ошибка загрузки профиля")
         }
     }
 
@@ -149,6 +149,22 @@ class AuthRepositoryImpl(
             }
         } catch (_: Exception) {
             "Ошибка сервера (${response.status.value})"
+        }
+    }
+
+    private fun handleException(e: Exception, defaultMessage: String): AuthResult.Error {
+        val message = e.message ?: ""
+        return if (message.contains("Failed to connect") ||
+            message.contains("Unable to resolve host") ||
+            message.contains("nodename nor servname") ||
+            message.contains("timeout") ||
+            message.contains("Connection refused") ||
+            message.contains("Network is unreachable") ||
+            e is kotlinx.io.IOException
+        ) {
+            AuthResult.Error("Нет подключения к интернету. Проверьте соединение.")
+        } else {
+            AuthResult.Error("$defaultMessage: ${e.message ?: "Неизвестная ошибка"}")
         }
     }
 }
