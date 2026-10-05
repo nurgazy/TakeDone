@@ -134,9 +134,13 @@ class AuthRepositoryImpl(
     }
 
     private suspend fun parseErrorMessage(response: HttpResponse): String {
+        val status = response.status.value
+        if (status >= 500) {
+            return "Сервер временно недоступен. Пожалуйста, попробуйте позже."
+        }
         return try {
             val text = response.bodyAsText()
-            if (text.isBlank()) return "Ошибка ${response.status.value}"
+            if (text.isBlank()) return "Ошибка $status"
             val element = json.parseToJsonElement(text)
             if (element is JsonObject && element.containsKey("detail")) {
                 when (val detail = element["detail"]) {
@@ -148,7 +152,7 @@ class AuthRepositoryImpl(
                 text
             }
         } catch (_: Exception) {
-            "Ошибка сервера (${response.status.value})"
+            "Ошибка сервера ($status)"
         }
     }
 
